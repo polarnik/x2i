@@ -379,6 +379,7 @@ func InitInfluxConnection(cmd *cobra.Command) error {
 	dbName, _ = cmd.Flags().GetString("database")
 	maxPoints, _ = cmd.Flags().GetUint("max-batch-size")
 	detached, _ := cmd.Flags().GetBool("detached")
+	influxV1, _ := cmd.Flags().GetBool("influxdb-v1")
 
 	var err error
 	c, err = infc.NewHTTPClient(infc.HTTPConfig{
@@ -399,12 +400,17 @@ func InitInfluxConnection(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("Connection with InfluxDB at %s could not be established. Error: %w", address, err)
 	}
-	res, err := c.Query(infc.NewQuery("SHOW MEASUREMENTS", dbName, ""))
-	if err != nil {
-		return fmt.Errorf("Connection with InfluxDB at %s could not be established. Error: %w", address, err)
-	}
-	if err := res.Error(); err != nil {
-		return fmt.Errorf("Test query failed with error: %w", err)
+	// The 'SHOW MEASUREMENTS' query is only supported by InfluxDB v1. For
+	// InfluxDB v2/v3 or VictoriaMetrics it fails, so this extra verification is
+	// only performed when explicitly enabled via the --influxdb-v1 flag.
+	if influxV1 {
+		res, err := c.Query(infc.NewQuery("SHOW MEASUREMENTS", dbName, ""))
+		if err != nil {
+			return fmt.Errorf("Connection with InfluxDB at %s could not be established. Error: %w", address, err)
+		}
+		if err := res.Error(); err != nil {
+			return fmt.Errorf("Test query failed with error: %w", err)
+		}
 	}
 	if !detached {
 		l.Infof("Connection with InfluxDB at %s successfully established\n", address)
