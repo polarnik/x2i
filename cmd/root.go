@@ -137,6 +137,9 @@ func init() {
 	rootCmd.Flags().StringP("system-under-test", "y", "", "System under test identifier")
 	rootCmd.Flags().UintP("stop-timeout", "s", 120, "Time (seconds) to exit if no new log lines found")
 	rootCmd.Flags().UintP("max-batch-size", "m", 1000, "Max points batch size to sent to InfluxDB")
+	rootCmd.Flags().String("timestamp-mode", "random", "Sub-millisecond timestamp strategy: 'random' (default) or 'line' (deterministic, re-loadable)")
+	rootCmd.Flags().Bool("upload-existing-files", false, "Upload already completed result files: skip the file-lock/permission check so logs whose writing has already finished can still be (re)uploaded to InfluxDB")
+	rootCmd.Flags().Bool("influxdb-v1", false, "Enable InfluxDB v1-compatible storage mode: run the 'SHOW MEASUREMENTS' test query to verify the connection. This query is only supported by InfluxDB v1, so keep it disabled (default) for InfluxDB v2/v3 or VictoriaMetrics")
 
 	// set up global context
 	ctx, cancel = context.WithCancel(context.Background())

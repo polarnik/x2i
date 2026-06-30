@@ -1,0 +1,12 @@
+.git
+.gitignore
+.github
+.idea
+*.md
+LICENSE
+grafana
+x2i-*
+coverage.out
+*.out
+Dockerfile
+.dockerignore

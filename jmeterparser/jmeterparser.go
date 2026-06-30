@@ -41,6 +41,7 @@ import (
 
 	"github.com/perfana/x2i/influx"
 	l "github.com/perfana/x2i/logger"
+	"github.com/perfana/x2i/tsutil"
 	"github.com/spf13/cobra"
 )
 
@@ -57,6 +58,10 @@ var (
 	systemUnderTest  string
 	testEnvironment  string
 	waitTime         uint
+	timestampMode    string
+	fileIndex        uint
+	offsetCounter    *tsutil.OffsetCounter
+	uploadExistingFiles bool
 	parserStopped = make(chan struct{})
 )
 
@@ -116,7 +121,7 @@ func waitForLog(ctx context.Context) error {
             return err
         }
         if len(files) == 0 {
-            fmt.Println("No results file found in dir %s matching pattern %s", logDir, resultFilePattern)
+            fmt.Printf("No results file found in dir %s matching pattern %s\n", logDir, resultFilePattern)
 			time.Sleep(loopTimeout)
             continue
         }
@@ -132,7 +137,7 @@ func waitForLog(ctx context.Context) error {
 		}
 
 		// WARNING: second part of this check may fail on Windows. Not tested
-		if fInfo.Mode().IsRegular() && (runtime.GOOS == "windows" || fInfo.Mode().Perm() == 420) {
+		if fInfo.Mode().IsRegular() && (uploadExistingFiles || runtime.GOOS == "windows" || fInfo.Mode().Perm() == 420) {
 			abs, _ := filepath.Abs(logDir + "/" + resultsLogFileName)
 			l.Infof("Found %s\n", abs)
 			break
@@ -149,9 +154,17 @@ func timeFromUnixBytes(ub []byte) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("Failed to parse timestamp as integer: %w", err)
 	}
-	// A workaround that adds random amount of microseconds to the timestamp
+	baseNs := timeStamp * oneMillisecond
+	if timestampMode == tsutil.ModeLine {
+		ts, overflow := offsetCounter.Timestamp(baseNs)
+		if overflow {
+			l.Errorf("More than %d lines share base time %d for file index %d; sub-millisecond offsets exhausted, points may be overwritten", tsutil.OffsetWindow, timeStamp, fileIndex)
+		}
+		return ts, nil
+	}
+	// A workaround that adds a random amount of nanoseconds to the timestamp
 	// so db entries will (should) not be overwritten
-	return time.Unix(0, timeStamp*oneMillisecond+rand.Int63n(oneMillisecond)), nil
+	return time.Unix(0, baseNs+rand.Int63n(oneMillisecond)), nil
 }
 
 func requestLineProcess(lb []byte) error {
@@ -320,11 +333,35 @@ func parseStart(ctx context.Context, wg *sync.WaitGroup) {
 	fileProcessor(ctx, file)
 }
 
+// setupTimestampMode validates the timestamp related flags and, for the
+// deterministic 'line' mode, initializes the per-file line offset counter.
+func setupTimestampMode() error {
+	switch timestampMode {
+	case tsutil.ModeRandom:
+		return nil
+	case tsutil.ModeLine:
+		if fileIndex >= tsutil.MaxGenerators {
+			return fmt.Errorf("file-index %d is out of range, must be < %d", fileIndex, tsutil.MaxGenerators)
+		}
+		offsetCounter = tsutil.NewOffsetCounter(fileIndex)
+		l.Infof("Using deterministic 'line' timestamp mode with file index %d", fileIndex)
+		return nil
+	default:
+		return fmt.Errorf("unknown timestamp-mode %q, expected %q or %q", timestampMode, tsutil.ModeRandom, tsutil.ModeLine)
+	}
+}
+
 // RunMain performs main application logic
 func RunMain(cmd *cobra.Command, dir string) {
 	systemUnderTest, _ = cmd.Flags().GetString("system-under-test")
 	testEnvironment, _ = cmd.Flags().GetString("test-environment")
 	waitTime, _ = cmd.Flags().GetUint("stop-timeout")
+	timestampMode, _ = cmd.Flags().GetString("timestamp-mode")
+	uploadExistingFiles, _ = cmd.Flags().GetBool("upload-existing-files")
+	if err := tsutil.ValidateMode(timestampMode); err != nil {
+		l.Errorln(err)
+		os.Exit(1)
+	}
 	rand.Seed(time.Now().UnixNano())
 	nodeName, _ = os.Hostname()
 
@@ -347,6 +384,14 @@ func RunMain(cmd *cobra.Command, dir string) {
 			return
 		}
 		l.Errorf("Failed waiting for %s with error: %v\n", resultsLogFileName, err)
+		os.Exit(1)
+	}
+
+	// Derive the file index automatically from the directory contents so that
+	// timestamps of different files stay apart in the deterministic 'line' mode.
+	fileIndex = tsutil.ComputeFileIndex(logDir, "*.csv", filepath.Join(logDir, resultsLogFileName))
+	if err := setupTimestampMode(); err != nil {
+		l.Errorln(err)
 		os.Exit(1)
 	}
 
