@@ -51,7 +51,7 @@ func preRunSetup(cmd *cobra.Command, args []string) error {
 	// Check if InfluxDB connection is successful before going to detached mode
 	err := influx.InitInfluxConnection(cmd)
 	if err != nil {
-		return fmt.Errorf("Failed to establish successful database connection: %w", err)
+		return fmt.Errorf("failed to establish successful database connection: %w", err)
 	}
 
 	// If detached state is requested, filter out corresponding flags and start new process
@@ -67,7 +67,7 @@ func preRunSetup(cmd *cobra.Command, args []string) error {
 
 		command := exec.Command(os.Args[0], newArgs...)
 		if err := command.Start(); err != nil {
-			return fmt.Errorf("Failed to start a detached process: %w", err)
+			return fmt.Errorf("failed to start a detached process: %w", err)
 		}
 		pid := command.Process.Pid
 		fmt.Printf("[PID]\t%d\n", pid)
@@ -155,5 +155,3 @@ func init() {
 	// set up global context
 	ctx, cancel = context.WithCancel(context.Background())
 }
-
-

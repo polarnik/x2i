@@ -35,9 +35,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 
 	"github.com/perfana/x2i/influx"
 	l "github.com/perfana/x2i/logger"
@@ -46,23 +46,23 @@ import (
 )
 
 const (
-	oneMillisecond        = 1_000_000
+	oneMillisecond = 1_000_000
 )
 
 var (
-	nodeName         string
-	resultsLogFileName string
-	errStoppedByUser = errors.New("Process stopped by user")
-	errFatal         = errors.New("Fatal error")
-	logDir           string
-	systemUnderTest  string
-	testEnvironment  string
-	waitTime         uint
-	timestampMode    string
-	fileIndex        uint
-	offsetCounter    *tsutil.OffsetCounter
+	nodeName            string
+	resultsLogFileName  string
+	errStoppedByUser    = errors.New("process stopped by user")
+	errFatal            = errors.New("fatal error")
+	logDir              string
+	systemUnderTest     string
+	testEnvironment     string
+	waitTime            uint
+	timestampMode       string
+	fileIndex           uint
+	offsetCounter       *tsutil.OffsetCounter
 	uploadExistingFiles bool
-	parserStopped = make(chan struct{})
+	parserStopped       = make(chan struct{})
 )
 
 func lookupTargetDir(ctx context.Context, dir string) error {
@@ -80,7 +80,7 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 
 		fInfo, err := os.Stat(dir)
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("Target path %s exists but there is an error: %w", dir, err)
+			return fmt.Errorf("target path %s exists but there is an error: %w", dir, err)
 		}
 		if os.IsNotExist(err) {
 			time.Sleep(loopTimeout)
@@ -88,7 +88,7 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 		}
 
 		if !fInfo.IsDir() {
-			return fmt.Errorf("Was expecting directory at %s, but found a file", dir)
+			return fmt.Errorf("was expecting directory at %s, but found a file", dir)
 		}
 
 		abs, _ := filepath.Abs(dir)
@@ -103,7 +103,7 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 func waitForLog(ctx context.Context) error {
 
 	const loopTimeout = 5 * time.Second
-    const resultFilePattern = "*.csv"
+	const resultFilePattern = "*.csv"
 
 	l.Infoln("Searching for " + logDir + "/" + resultFilePattern + " files...")
 	for {
@@ -115,17 +115,17 @@ func waitForLog(ctx context.Context) error {
 		default:
 		}
 
-        files, err := filepath.Glob(logDir + "/" + resultFilePattern)
-        if err != nil {
-            fmt.Println("Error:", err)
-            return err
-        }
-        if len(files) == 0 {
-            fmt.Printf("No results file found in dir %s matching pattern %s\n", logDir, resultFilePattern)
+		files, err := filepath.Glob(logDir + "/" + resultFilePattern)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return err
+		}
+		if len(files) == 0 {
+			fmt.Printf("No results file found in dir %s matching pattern %s\n", logDir, resultFilePattern)
 			time.Sleep(loopTimeout)
-            continue
-        }
-        resultsLogFileName = filepath.Base(files[0])
+			continue
+		}
+		resultsLogFileName = filepath.Base(files[0])
 
 		fInfo, err := os.Stat(logDir + "/" + resultsLogFileName)
 		if err != nil && !os.IsNotExist(err) {
@@ -143,7 +143,7 @@ func waitForLog(ctx context.Context) error {
 			break
 		}
 
-		return errors.New("Something wrong happened when attempting to open " + resultsLogFileName)
+		return errors.New("something wrong happened when attempting to open " + resultsLogFileName)
 	}
 
 	return nil
@@ -152,7 +152,7 @@ func waitForLog(ctx context.Context) error {
 func timeFromUnixBytes(ub []byte) (time.Time, error) {
 	timeStamp, err := strconv.ParseInt(string(ub), 10, 64)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("Failed to parse timestamp as integer: %w", err)
+		return time.Time{}, fmt.Errorf("failed to parse timestamp as integer: %w", err)
 	}
 	baseNs := timeStamp * oneMillisecond
 	if timestampMode == tsutil.ModeLine {
@@ -170,104 +170,104 @@ func timeFromUnixBytes(ub []byte) (time.Time, error) {
 func requestLineProcess(lb []byte) error {
 
 	split := bytes.Split(lb, []byte(","))
-		if len(split) != 17 {
-			return errors.New("Line contains unexpected amount of values")
-		}
+	if len(split) != 17 {
+		return errors.New("line contains unexpected amount of values")
+	}
 
-		timestamp, err := timeFromUnixBytes(split[0])
-		if err != nil {
-			return err
-		}
+	timestamp, err := timeFromUnixBytes(split[0])
+	if err != nil {
+		return err
+	}
 
-		duration, err := strconv.Atoi(string(split[1]))
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
-		grpThreads, err := strconv.Atoi(string(split[11]))
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
-		allThreads, err := strconv.Atoi(string(split[12]))
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
-		requestPoint, err := influx.NewPoint(
-				"requests",
-				map[string]string{
-					"label":       strings.TrimSpace(strings.ReplaceAll(string(split[2]), " ", "_")),
-					"success":     string(split[7]),
-					"systemUnderTest": systemUnderTest,
-					"testEnvironment": testEnvironment,
-					"nodeName":   nodeName,
-					"responseCode": string(split[3]),
-					"grpThreads": string(split[11]),
-					"allThreads": string(split[12]),
-					"failureMessage": string(bytes.TrimSpace(split[8])),
-				},
-				map[string]interface{}{
-					"duration":  duration   ,
-				},
-				timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
+	duration, err := strconv.Atoi(string(split[1]))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+	grpThreads, err := strconv.Atoi(string(split[11]))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+	allThreads, err := strconv.Atoi(string(split[12]))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+	requestPoint, err := influx.NewPoint(
+		"requests",
+		map[string]string{
+			"label":           strings.TrimSpace(strings.ReplaceAll(string(split[2]), " ", "_")),
+			"success":         string(split[7]),
+			"systemUnderTest": systemUnderTest,
+			"testEnvironment": testEnvironment,
+			"nodeName":        nodeName,
+			"responseCode":    string(split[3]),
+			"grpThreads":      string(split[11]),
+			"allThreads":      string(split[12]),
+			"failureMessage":  string(bytes.TrimSpace(split[8])),
+		},
+		map[string]interface{}{
+			"duration": duration,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-			influx.SendPoint(requestPoint)
+	influx.SendPoint(requestPoint)
 
-		grpThreadsPoint, err := influx.NewPoint(
-				"groupThreads",
-				map[string]string{
-					"success":     string(split[7]),
-					"threadName":     string(split[5]),
-					"systemUnderTest": systemUnderTest,
-					"testEnvironment": testEnvironment,
-					"nodeName":   nodeName,
-				},
-				map[string]interface{}{
-					"grpThreads":  grpThreads ,
-				},
-				timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
+	grpThreadsPoint, err := influx.NewPoint(
+		"groupThreads",
+		map[string]string{
+			"success":         string(split[7]),
+			"threadName":      string(split[5]),
+			"systemUnderTest": systemUnderTest,
+			"testEnvironment": testEnvironment,
+			"nodeName":        nodeName,
+		},
+		map[string]interface{}{
+			"grpThreads": grpThreads,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-			influx.SendPoint(grpThreadsPoint)
+	influx.SendPoint(grpThreadsPoint)
 
-		allThreadsPoint, err := influx.NewPoint(
-				"allThreads",
-				map[string]string{
-					"success":     string(split[7]),
-					"systemUnderTest": systemUnderTest,
-					"testEnvironment": testEnvironment,
-					"nodeName":   nodeName,
-				},
-				map[string]interface{}{
-					"allThreads":  allThreads ,
-				},
-				timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
+	allThreadsPoint, err := influx.NewPoint(
+		"allThreads",
+		map[string]string{
+			"success":         string(split[7]),
+			"systemUnderTest": systemUnderTest,
+			"testEnvironment": testEnvironment,
+			"nodeName":        nodeName,
+		},
+		map[string]interface{}{
+			"allThreads": allThreads,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-			influx.SendPoint(allThreadsPoint)
+	influx.SendPoint(allThreadsPoint)
 
 	return nil
 }
 
 func stringProcessor(lineBuffer []byte) error {
 
-    // todo: the first line contains the header, e.g.
-    // timeStamp,elapsed,label,responseCode, etc.
-    // this line should be skipped, currently it causes an error in the log file, but does not harm:
-    // ERROR 2024/07/10 10:47:06 String processing failed: Failed to parse timestamp as integer:
-    // strconv.ParseInt: parsing "timeStamp": invalid syntax
- 	return requestLineProcess(lineBuffer)
+	// todo: the first line contains the header, e.g.
+	// timeStamp,elapsed,label,responseCode, etc.
+	// this line should be skipped, currently it causes an error in the log file, but does not harm:
+	// ERROR 2024/07/10 10:47:06 String processing failed: Failed to parse timestamp as integer:
+	// strconv.ParseInt: parsing "timeStamp": invalid syntax
+	return requestLineProcess(lineBuffer)
 
 }
 

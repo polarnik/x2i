@@ -2,11 +2,12 @@ package gatlingparser
 
 import (
 	"fmt"
-	client "github.com/influxdata/influxdb1-client/v2"
-	"github.com/perfana/x2i/influx"
 	"math/rand"
 	"strings"
 	"time"
+
+	client "github.com/influxdata/influxdb1-client/v2"
+	"github.com/perfana/x2i/influx"
 )
 
 type RunMessage struct {
@@ -150,7 +151,7 @@ type UserRecord struct {
 	Timestamp int64
 }
 
-func eventToSting(event bool) string {
+func eventToString(event bool) string {
 	eventString := "END"
 	if event {
 		eventString = "START"
@@ -159,7 +160,7 @@ func eventToSting(event bool) string {
 }
 
 func (ur UserRecord) String() string {
-	event := eventToSting(ur.Event)
+	event := eventToString(ur.Event)
 	return fmt.Sprintf("USR scenario: %s, event: %s, timestamp: %s",
 		ur.Scenario,
 		event,
@@ -169,7 +170,7 @@ func (ur UserRecord) String() string {
 
 func (ur UserRecord) ToInfluxUserLineParams() (time.Time, string, string) {
 	timestamp := toInfluxTimestamp(ur.Timestamp)
-	return timestamp, ur.Scenario, eventToSting(ur.Event)
+	return timestamp, ur.Scenario, eventToString(ur.Event)
 }
 
 type ErrorRecord struct {
@@ -199,5 +200,5 @@ type Group struct {
 }
 
 func (g Group) String() string {
-	return fmt.Sprintf("%s", g.Hierarchy)
+	return strings.Join(g.Hierarchy, ", ")
 }

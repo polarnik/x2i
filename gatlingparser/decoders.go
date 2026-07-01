@@ -20,6 +20,16 @@ const (
 	ErrorRecordType
 )
 
+const (
+	// maxStringLength caps the byte length of a decoded string. It guards
+	// against corrupt or partially written records that would otherwise
+	// request a huge allocation.
+	maxStringLength int32 = 2000
+	// maxHierarchyLength caps the number of group hierarchy elements read
+	// from a single record for the same reason.
+	maxHierarchyLength int32 = 2000
+)
+
 func ReadInt(reader *bufio.Reader) (int32, error) {
 	var int32Value int32
 	err := binary.Read(reader, currentByteOrder(), &int32Value)
@@ -27,16 +37,7 @@ func ReadInt(reader *bufio.Reader) (int32, error) {
 }
 
 func currentByteOrder() binary.ByteOrder {
-	var order binary.ByteOrder = binary.BigEndian
-	//if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-	//	order = binary.LittleEndian
-	//}
-	//l.Debugf("Using byte order: %v for OS: %s, ARCH: %s",
-	//	order == binary.LittleEndian,
-	//	runtime.GOOS,
-	//	runtime.GOARCH,
-	//)
-	return order
+	return binary.BigEndian
 }
 
 func ReadLong(reader *bufio.Reader) (int64, error) {
@@ -63,7 +64,7 @@ func ReadString(reader *bufio.Reader) (string, error) {
 		return "", fmt.Errorf("invalid string length: %d", strLength)
 	}
 
-	if strLength > 2000 {
+	if strLength > maxStringLength {
 		return "", fmt.Errorf("invalid string length: %d", strLength)
 	}
 
@@ -75,9 +76,7 @@ func ReadString(reader *bufio.Reader) (string, error) {
 	if _, err = reader.ReadByte(); err != nil {
 		return "", err
 	}
-	readString := string(strBytes)
-	// fmt.Printf("DEBUG: Read string as %q\n", readString)
-	return readString, nil
+	return string(strBytes), nil
 }
 
 func ReadSanitizedString(reader *bufio.Reader) (string, error) {
@@ -212,8 +211,6 @@ func ReadHeader(reader *bufio.Reader) (RunMessage, []string, [][]byte, error) {
 }
 
 func ReadGroup(reader *bufio.Reader) (*Group, error) {
-	const maxHierarchyLength = 2000 // adjust to needs
-
 	hierarchyLength, err := ReadInt(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read hierarchy length: %w", err)
@@ -369,7 +366,7 @@ func ReadErrorRecord(reader *bufio.Reader, runStartTimestamp int64) (ErrorRecord
 	return record, nil
 }
 
-func ReadNotHeaderRecord(reader *bufio.Reader, runStartTimestapm int64, scenarios []string) (interface{}, error) {
+func ReadNotHeaderRecord(reader *bufio.Reader, runStartTimestamp int64, scenarios []string) (interface{}, error) {
 	headBytes, err := reader.Peek(8)
 	if err == io.EOF {
 		return nil, err
@@ -385,13 +382,13 @@ func ReadNotHeaderRecord(reader *bufio.Reader, runStartTimestapm int64, scenario
 
 	switch recordType {
 	case RequestRecordType:
-		return ReadRequestRecord(reader, runStartTimestapm)
+		return ReadRequestRecord(reader, runStartTimestamp)
 	case GroupRecordType:
-		return ReadGroupRecord(reader, runStartTimestapm)
+		return ReadGroupRecord(reader, runStartTimestamp)
 	case UserRecordType:
-		return ReadUserRecord(reader, runStartTimestapm, scenarios)
+		return ReadUserRecord(reader, runStartTimestamp, scenarios)
 	case ErrorRecordType:
-		return ReadErrorRecord(reader, runStartTimestapm)
+		return ReadErrorRecord(reader, runStartTimestamp)
 	default:
 		l.Errorf("Unknown record start fragment: %s\n", hex.EncodeToString(headBytes))
 		return nil, fmt.Errorf("unknown record type: %d", recordType)

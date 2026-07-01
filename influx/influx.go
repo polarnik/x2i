@@ -31,10 +31,10 @@ import (
 	"sync"
 	"time"
 
-	l "github.com/perfana/x2i/logger"
 	_ "github.com/influxdata/influxdb1-client" // workaround from client documentation
 	client "github.com/influxdata/influxdb1-client/v2"
 	infc "github.com/influxdata/influxdb1-client/v2"
+	l "github.com/perfana/x2i/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -53,6 +53,20 @@ type userLineData struct {
 	status    string
 }
 
+const (
+	// channelBufferSize is the buffer capacity of the internal channels used
+	// to pass points and user-line data from the parser to the consumers.
+	channelBufferSize = 1000
+
+	// writeDataTimeout is the number of seconds to wait for new points before
+	// flushing the current batch to InfluxDB.
+	// TODO: parameterize later
+	writeDataTimeout = 30
+
+	// timeRangeLen is the width in seconds of each user-data aggregation window.
+	timeRangeLen = 1
+)
+
 var (
 	c         infc.Client
 	dbName    string
@@ -61,12 +75,9 @@ var (
 	maxPoints uint
 
 	// pc is a channel to send all point from parser to
-	pc = make(chan *infc.Point, 1000)
+	pc = make(chan *infc.Point, channelBufferSize)
 	// uc is a channel for userLineData processing
-	uc = make(chan userLineData, 1000)
-
-	// TODO: parameterize later
-	writeDataTimeout = 5
+	uc = make(chan userLineData, channelBufferSize)
 )
 
 // InitTestInfo collect basic test information to be used by Influx client
@@ -88,6 +99,7 @@ func NewPoint(name string, tags map[string]string, fields map[string]interface{}
 	uniqueTime := t.Add(time.Duration(rand.Int63n(1000000)) * time.Nanosecond)
 	return infc.NewPoint(name, tags, fields, uniqueTime)
 }
+
 // SendPoint sends point to the channel listened by metrics consumer
 func SendPoint(p *infc.Point) {
 	pc <- p
@@ -96,10 +108,14 @@ func SendPoint(p *infc.Point) {
 func sendBatch(points []*infc.Point) {
 	const retries = 5
 
-	bp, _ := infc.NewBatchPoints(infc.BatchPointsConfig{
+	bp, err := infc.NewBatchPoints(infc.BatchPointsConfig{
 		Precision: "ns",
 		Database:  dbName,
 	})
+	if err != nil {
+		l.Errorf("Failed to create batch points for %d points: %v\n", len(points), err)
+		return
+	}
 	bp.AddPoints(points)
 
 	// Retry mechanism for batch points sending
@@ -115,7 +131,10 @@ SendLoop:
 				return
 			}
 			time.Sleep(2 * time.Second)
+			// Retry the write after a short delay
+			continue SendLoop
 		}
+		// Write succeeded, stop retrying
 		break SendLoop
 	}
 
@@ -152,7 +171,7 @@ func sendUserData(m map[string]int, ts time.Time) ([]*client.Point, error) {
 			ts,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("Error creating new point with user data: %w", err)
+			return nil, fmt.Errorf("error creating new point with user data: %w", err)
 		}
 
 		points = append(points, point)
@@ -164,7 +183,6 @@ func sendUserData(m map[string]int, ts time.Time) ([]*client.Point, error) {
 
 func usersProcessor(ctx context.Context, wg *sync.WaitGroup) {
 	// Send current user state to database each N seconds
-	const timeRangeLen = 5
 	defer wg.Done()
 
 	// Workaround:
@@ -321,7 +339,7 @@ func sendClosingPoint() {
 	}
 
 	// Create a point signifying a test end
-	p, _ := infc.NewPoint(
+	p, err := infc.NewPoint(
 		"tests",
 		map[string]string{
 			"action":          "end",
@@ -336,6 +354,10 @@ func sendClosingPoint() {
 		// Add 5 secods to the time since last point was received
 		lastPoint.Add(time.Second*5),
 	)
+	if err != nil {
+		l.Errorf("Failed to create closing point: %v", err)
+		return
+	}
 
 	sendBatch([]*infc.Point{p})
 }
@@ -383,6 +405,13 @@ func InitInfluxConnection(cmd *cobra.Command) error {
 	detached, _ := cmd.Flags().GetBool("detached")
 	influxV1, _ := cmd.Flags().GetBool("influxdb-v1")
 
+	// max-batch-size must be positive: a zero batch size makes the batching
+	// logic degenerate (len(points) == 0 is never reached after append, and
+	// points[:0]/points[0:] slicing loops never make progress).
+	if maxPoints == 0 {
+		return fmt.Errorf("max-batch-size must be greater than 0, got %d", maxPoints)
+	}
+
 	var err error
 	c, err = infc.NewHTTPClient(infc.HTTPConfig{
 		Addr:          address,
@@ -395,12 +424,9 @@ func InitInfluxConnection(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	//sleep for 15 seconds to allow influxdb to	start
-	//time.Sleep(15 * time.Second)
-
 	_, _, err = c.Ping(time.Second * 10)
 	if err != nil {
-		return fmt.Errorf("Connection with InfluxDB at %s could not be established. Error: %w", address, err)
+		return fmt.Errorf("connection with InfluxDB at %s could not be established: %w", address, err)
 	}
 	// The 'SHOW MEASUREMENTS' query is only supported by InfluxDB v1. For
 	// InfluxDB v2/v3 or VictoriaMetrics it fails, so this extra verification is
@@ -408,10 +434,10 @@ func InitInfluxConnection(cmd *cobra.Command) error {
 	if influxV1 {
 		res, err := c.Query(infc.NewQuery("SHOW MEASUREMENTS", dbName, ""))
 		if err != nil {
-			return fmt.Errorf("Connection with InfluxDB at %s could not be established. Error: %w", address, err)
+			return fmt.Errorf("connection with InfluxDB at %s could not be established: %w", address, err)
 		}
 		if err := res.Error(); err != nil {
-			return fmt.Errorf("Test query failed with error: %w", err)
+			return fmt.Errorf("test query failed: %w", err)
 		}
 	}
 	if !detached {

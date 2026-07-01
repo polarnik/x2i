@@ -36,9 +36,9 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 
 	"github.com/perfana/x2i/influx"
 	l "github.com/perfana/x2i/logger"
@@ -47,26 +47,26 @@ import (
 )
 
 const (
-	oneMillisecond        = 1_000_000
+	oneMillisecond = 1_000_000
 )
 
 var (
-	nodeName             string
-	errStoppedByUser = errors.New("Process stopped by user")
-	errFatal         = errors.New("Fatal error")
-	logDir           string
-	systemUnderTest  string
-	testEnvironment  string
-	waitTime         uint
-	timestampMode    string
-	fileIndex        uint
-	offsetCounter    *tsutil.OffsetCounter
+	nodeName            string
+	errStoppedByUser    = errors.New("process stopped by user")
+	errFatal            = errors.New("fatal error")
+	logDir              string
+	systemUnderTest     string
+	testEnvironment     string
+	waitTime            uint
+	timestampMode       string
+	fileIndex           uint
+	offsetCounter       *tsutil.OffsetCounter
 	uploadExistingFiles bool
-    resultsLogFileName string
-    http_req_duration = regexp.MustCompile(`^http_req_duration.*`)
-    grpc_req_duration = regexp.MustCompile(`^grpc_req_duration.*`)
-    group_duration    = regexp.MustCompile(`^group_duration.*`)
-	parserStopped = make(chan struct{})
+	resultsLogFileName  string
+	http_req_duration   = regexp.MustCompile(`^http_req_duration.*`)
+	grpc_req_duration   = regexp.MustCompile(`^grpc_req_duration.*`)
+	group_duration      = regexp.MustCompile(`^group_duration.*`)
+	parserStopped       = make(chan struct{})
 )
 
 func lookupTargetDir(ctx context.Context, dir string) error {
@@ -84,7 +84,7 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 
 		fInfo, err := os.Stat(dir)
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("Target path %s exists but there is an error: %w", dir, err)
+			return fmt.Errorf("target path %s exists but there is an error: %w", dir, err)
 		}
 		if os.IsNotExist(err) {
 			time.Sleep(loopTimeout)
@@ -92,7 +92,7 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 		}
 
 		if !fInfo.IsDir() {
-			return fmt.Errorf("Was expecting directory at %s, but found a file", dir)
+			return fmt.Errorf("was expecting directory at %s, but found a file", dir)
 		}
 
 		abs, _ := filepath.Abs(dir)
@@ -104,11 +104,10 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 	return nil
 }
 
-
 func waitForLog(ctx context.Context) error {
 
 	const loopTimeout = 5 * time.Second
-    const resultFilePattern = "*.csv"
+	const resultFilePattern = "*.csv"
 
 	l.Infoln("Searching for " + logDir + "/" + resultFilePattern + " files...")
 	for {
@@ -120,17 +119,17 @@ func waitForLog(ctx context.Context) error {
 		default:
 		}
 
-        files, err := filepath.Glob(logDir + "/" + resultFilePattern)
-        if err != nil {
-            fmt.Println("Error:", err)
-            return err
-        }
-        if len(files) == 0 {
-            fmt.Printf("No results file found in dir %s matching pattern %s\n", logDir, resultFilePattern)
+		files, err := filepath.Glob(logDir + "/" + resultFilePattern)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return err
+		}
+		if len(files) == 0 {
+			fmt.Printf("No results file found in dir %s matching pattern %s\n", logDir, resultFilePattern)
 			time.Sleep(loopTimeout)
-            continue
-        }
-        resultsLogFileName = filepath.Base(files[0])
+			continue
+		}
+		resultsLogFileName = filepath.Base(files[0])
 
 		fInfo, err := os.Stat(logDir + "/" + resultsLogFileName)
 		if err != nil && !os.IsNotExist(err) {
@@ -148,7 +147,7 @@ func waitForLog(ctx context.Context) error {
 			break
 		}
 
-		return errors.New("Something wrong happened when attempting to open " + resultsLogFileName)
+		return errors.New("something wrong happened when attempting to open " + resultsLogFileName)
 	}
 
 	return nil
@@ -157,7 +156,7 @@ func waitForLog(ctx context.Context) error {
 func timeFromUnixBytes(ub []byte) (time.Time, error) {
 	timeStamp, err := strconv.ParseInt(string(ub), 10, 64)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("Failed to parse timestamp as integer: %w", err)
+		return time.Time{}, fmt.Errorf("failed to parse timestamp as integer: %w", err)
 	}
 	baseNs := (timeStamp * 1000) * oneMillisecond
 	if timestampMode == tsutil.ModeLine {
@@ -174,143 +173,138 @@ func timeFromUnixBytes(ub []byte) (time.Time, error) {
 
 func http_req_duration_LineProcess(lb []byte) error {
 
+	split := bytes.Split(lb, []byte(","))
+	if len(split) != 19 {
+		return errors.New("line contains unexpected amount of values")
+	}
 
-split := bytes.Split(lb, []byte(","))
-		if len(split) != 19 {
-			return errors.New("Line contains unexpected amount of values")
-		}
+	timestamp, err := timeFromUnixBytes(split[1])
+	if err != nil {
+		return err
+	}
 
-		timestamp, err := timeFromUnixBytes(split[1])
-		if err != nil {
-			return err
-		}
+	duration, err := strconv.ParseFloat(string(split[2]), 64)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
 
-		duration, err := strconv.ParseFloat(string(split[2]), 64)
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
+	requestPoint, err := influx.NewPoint(
+		"http_req_duration",
+		map[string]string{
+			"name":              strings.TrimSpace(strings.ReplaceAll(string(split[9]), " ", "_")),
+			"group":             strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
+			"method":            string(split[8]),
+			"expected_response": string(split[6]),
+			"systemUnderTest":   systemUnderTest,
+			"testEnvironment":   testEnvironment,
+			"nodeName":          nodeName,
+			"status":            string(split[13]),
+			"service":           string(split[12]),
+			"url":               string(split[16]),
+			"scenario":          string(split[11]),
+			"error_code":        string(split[5]),
+			"error":             string(bytes.TrimSpace(split[4])),
+		},
+		map[string]interface{}{
+			"duration": duration,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-        requestPoint, err := influx.NewPoint(
-        "http_req_duration",
-        map[string]string{
-            "name": strings.TrimSpace(strings.ReplaceAll(string(split[9]), " ", "_")),
-            "group": strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
-            "method": string(split[8]),
-            "expected_response": string(split[6]),
-            "systemUnderTest": systemUnderTest,
-            "testEnvironment": testEnvironment,
-            "nodeName":   nodeName,
-            "status": string(split[13]),
-            "service": string(split[12]),
-            "url": string(split[16]),
-            "scenario": string(split[11]),
-            "error_code": string(split[5]),
-            "error": string(bytes.TrimSpace(split[4])),
-        },
-        map[string]interface{}{
-            "duration":  duration   ,
-        },
-            timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
-
-			influx.SendPoint(requestPoint)
+	influx.SendPoint(requestPoint)
 
 	return nil
 }
 func grpc_req_duration_LineProcess(lb []byte) error {
 
+	split := bytes.Split(lb, []byte(","))
+	if len(split) != 19 {
+		return errors.New("line contains unexpected amount of values")
+	}
 
-split := bytes.Split(lb, []byte(","))
-		if len(split) != 19 {
-			return errors.New("Line contains unexpected amount of values")
-		}
+	timestamp, err := timeFromUnixBytes(split[1])
+	if err != nil {
+		return err
+	}
 
-		timestamp, err := timeFromUnixBytes(split[1])
-		if err != nil {
-			return err
-		}
+	duration, err := strconv.ParseFloat(string(split[2]), 64)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
 
-		duration, err := strconv.ParseFloat(string(split[2]), 64)
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
+	requestPoint, err := influx.NewPoint(
+		"grpc_req_duration",
+		map[string]string{
+			"name":              strings.TrimSpace(strings.ReplaceAll(string(split[9]), " ", "_")),
+			"group":             strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
+			"method":            string(split[8]),
+			"expected_response": string(split[6]),
+			"systemUnderTest":   systemUnderTest,
+			"testEnvironment":   testEnvironment,
+			"nodeName":          nodeName,
+			"status":            string(split[13]),
+			"service":           string(split[12]),
+			"url":               string(split[16]),
+			"scenario":          string(split[11]),
+			"error_code":        string(split[5]),
+			"error":             string(bytes.TrimSpace(split[4])),
+		},
+		map[string]interface{}{
+			"duration": duration,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-        requestPoint, err := influx.NewPoint(
-        "grpc_req_duration",
-        map[string]string{
-            "name": strings.TrimSpace(strings.ReplaceAll(string(split[9]), " ", "_")),
-            "group": strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
-            "method": string(split[8]),
-            "expected_response": string(split[6]),
-            "systemUnderTest": systemUnderTest,
-            "testEnvironment": testEnvironment,
-            "nodeName":   nodeName,
-            "status": string(split[13]),
-            "service": string(split[12]),
-            "url": string(split[16]),
-            "scenario": string(split[11]),
-            "error_code": string(split[5]),
-            "error": string(bytes.TrimSpace(split[4])),
-        },
-        map[string]interface{}{
-            "duration":  duration   ,
-        },
-            timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
-
-			influx.SendPoint(requestPoint)
+	influx.SendPoint(requestPoint)
 
 	return nil
 }
 
 func group_duration_LineProcess(lb []byte) error {
 
+	split := bytes.Split(lb, []byte(","))
+	if len(split) != 19 {
+		return errors.New("line contains unexpected amount of values")
+	}
 
-split := bytes.Split(lb, []byte(","))
-		if len(split) != 19 {
-			return errors.New("Line contains unexpected amount of values")
-		}
+	timestamp, err := timeFromUnixBytes(split[1])
+	if err != nil {
+		return err
+	}
 
-		timestamp, err := timeFromUnixBytes(split[1])
-		if err != nil {
-			return err
-		}
+	duration, err := strconv.ParseFloat(string(split[2]), 64)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
 
-    	duration, err := strconv.ParseFloat(string(split[2]), 64)
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
+	requestPoint, err := influx.NewPoint(
+		"group_duration",
+		map[string]string{
+			"group":    strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
+			"scenario": string(split[11]),
+		},
+		map[string]interface{}{
+			"duration": duration,
+		},
+		timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new point with request data: %w", err)
+	}
 
-        requestPoint, err := influx.NewPoint(
-        "group_duration",
-        map[string]string{
-            "group": strings.TrimSpace(strings.ReplaceAll(string(split[7]), " ", "_")),
-            "scenario": string(split[11]),
-
-        },
-        map[string]interface{}{
-            "duration":  duration,
-        },
-            timestamp,
-			)
-			if err != nil {
-				return fmt.Errorf("Error creating new point with request data: %w", err)
-			}
-
-			influx.SendPoint(requestPoint)
+	influx.SendPoint(requestPoint)
 
 	return nil
 }
-
 
 func stringProcessor(lineBuffer []byte) error {
 
@@ -323,7 +317,6 @@ func stringProcessor(lineBuffer []byte) error {
 		return group_duration_LineProcess(lineBuffer)
 	default:
 		return nil
-		//return fmt.Errorf("Unknown line type encountered")
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -57,6 +58,10 @@ const (
 	groupLineLen   = 7
 	userLineLen    = 6
 	errorLineLen   = 3
+
+	// recordsChannelBufferSize is the buffer capacity of the channel that
+	// carries decoded records from the reader goroutine to the writer.
+	recordsChannelBufferSize = 100
 )
 
 var (
@@ -64,17 +69,19 @@ var (
 	startTime            = time.Now().Unix()
 	nodeName             string
 
-	errFound         = errors.New("Found")
-	errStoppedByUser = errors.New("Process stopped by user")
-	errFatal         = errors.New("Fatal error")
-	logDir           string
-	systemUnderTest  string
-	testEnvironment  string
-	simulationName   string
-	waitTime         uint
-	timestampMode    string
-	fileIndex        uint
-	offsetCounter    *tsutil.OffsetCounter
+	// errFound is a sentinel error used to stop directory traversal early
+	// once the matching results directory has been found.
+	errFound            = errors.New("results directory found")
+	errStoppedByUser    = errors.New("process stopped by user")
+	errFatal            = errors.New("fatal error")
+	logDir              string
+	systemUnderTest     string
+	testEnvironment     string
+	simulationName      string
+	waitTime            uint
+	timestampMode       string
+	fileIndex           uint
+	offsetCounter       *tsutil.OffsetCounter
 	uploadExistingFiles bool
 
 	tabSep = []byte{9}
@@ -130,15 +137,20 @@ func lookupTargetDir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func walkFunc(path string, info os.FileInfo, err error) error {
+func walkFunc(path string, d fs.DirEntry, err error) error {
 	// First check if there was an error accessing the file/directory
 	if err != nil {
-		// Either log the error and continue, or return it to stop walking
-		l.Errorf("Error accessing path %s: %v", path, err)
-		return nil // or return err if you want to stop walking
+		// Log the error and continue walking.
+		l.Errorf("error accessing path %s: %v", path, err)
+		return nil
 	}
 
-	if info.IsDir() && resultDirNamePattern.MatchString(info.Name()) {
+	if d.IsDir() && resultDirNamePattern.MatchString(d.Name()) {
+		info, err := d.Info()
+		if err != nil {
+			l.Errorf("error reading info for path %s: %v", path, err)
+			return nil
+		}
 		l.Debugf("Found directory '%s' with mod time %s (start time: %s)", path, info.ModTime().String(), time.Unix(startTime, 0).String())
 		startTimeMinusSlack := startTime - 60
 		if info.ModTime().Unix() > startTimeMinusSlack {
@@ -146,6 +158,7 @@ func walkFunc(path string, info os.FileInfo, err error) error {
 			l.Infof("Log directory '%s' with mod time %s is newer than start time minus slack %s", logDir,
 				info.ModTime().String(),
 				time.Unix(startTimeMinusSlack, 0).String())
+			// Returning the sentinel error stops the walk early.
 			return errFound
 		}
 	}
@@ -172,7 +185,7 @@ func lookupResultsDir(ctx context.Context, dir string) error {
 		default:
 		}
 
-		err := filepath.Walk(dir, walkFunc)
+		err := filepath.WalkDir(dir, walkFunc)
 		if errors.Is(err, errFound) {
 			break
 		}
@@ -247,7 +260,7 @@ func waitForLog(ctx context.Context) error {
 func timeFromUnixBytes(ub []byte) (time.Time, error) {
 	timeStamp, err := strconv.ParseInt(string(ub), 10, 64)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("Failed to parse timestamp as integer: %w", err)
+		return time.Time{}, fmt.Errorf("failed to parse timestamp as integer: %w", err)
 	}
 	baseNs := timeStamp * oneMillisecond
 	if timestampMode == tsutil.ModeLine {
@@ -268,7 +281,7 @@ func userLineProcess(lb []byte) error {
 	splitCount := len(split)
 
 	if splitCount != 4 {
-		return errors.New(fmt.Sprintf("USER line contains %d instead of 4 values", splitCount))
+		return fmt.Errorf("USER line contains %d instead of 4 values", splitCount)
 	}
 	scenario := string(split[1])
 	// Using the second of the two timestamps
@@ -292,11 +305,11 @@ func requestLineProcess(lb []byte) error {
 
 	start, err := strconv.ParseInt(string(split[3]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("Failed to parse request start time in line as integer: %w", err)
+		return fmt.Errorf("failed to parse request start time in line as integer: %w", err)
 	}
 	end, err := strconv.ParseInt(string(split[4]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("Failed to parse request end time in line as integer: %w", err)
+		return fmt.Errorf("failed to parse request end time in line as integer: %w", err)
 	}
 	timestamp, err := timeFromUnixBytes(split[4])
 	if err != nil {
@@ -321,7 +334,7 @@ func requestLineProcess(lb []byte) error {
 		timestamp,
 	)
 	if err != nil {
-		return fmt.Errorf("Error creating new point with request data: %w", err)
+		return fmt.Errorf("error creating new point with request data: %w", err)
 	}
 
 	influx.SendPoint(point)
@@ -338,15 +351,15 @@ func groupLineProcess(lb []byte) error {
 
 	start, err := strconv.ParseInt(string(split[2]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("Failed to parse group start time in line as integer: %w", err)
+		return fmt.Errorf("failed to parse group start time in line as integer: %w", err)
 	}
 	end, err := strconv.ParseInt(string(split[3]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("Failed to parse group end time in line as integer: %w", err)
+		return fmt.Errorf("failed to parse group end time in line as integer: %w", err)
 	}
 	rawDuration, err := strconv.ParseInt(string(split[4]), 10, 32)
 	if err != nil {
-		return fmt.Errorf("Failed to parse group raw duration in line as integer: %w", err)
+		return fmt.Errorf("failed to parse group raw duration in line as integer: %w", err)
 	}
 	timestamp, err := timeFromUnixBytes(split[3])
 	if err != nil {
@@ -370,7 +383,7 @@ func groupLineProcess(lb []byte) error {
 		timestamp,
 	)
 	if err != nil {
-		return fmt.Errorf("Error creating new point with group data: %w", err)
+		return fmt.Errorf("error creating new point with group data: %w", err)
 	}
 
 	influx.SendPoint(point)
@@ -411,7 +424,7 @@ func runLineProcess(lb []byte) error {
 		testStartTime,
 	)
 	if err != nil {
-		return fmt.Errorf("Error creating new point with test start data: %w", err)
+		return fmt.Errorf("error creating new point with test start data: %w", err)
 	}
 
 	influx.SendPoint(point)
@@ -443,7 +456,7 @@ func errorLineProcess(lb []byte) error {
 		timestamp,
 	)
 	if err != nil {
-		return fmt.Errorf("Error creating new point with error data: %w", err)
+		return fmt.Errorf("error creating new point with error data: %w", err)
 	}
 
 	influx.SendPoint(point)
@@ -470,14 +483,11 @@ func stringProcessor(lineBuffer []byte) error {
 		}
 		return err
 	default:
-		// If the line buffer contains unknown characters, convert bytes to hex string for better debugging
-		// hexLineBuffer := fmt.Sprintf("%X", lineBuffer)
-		//return fmt.Errorf("Unknown line type encountered: %s (hex: %s)", lineBuffer, hexLineBuffer)
 		// If string is longer than 24 chars, truncate it
 		if len(lineBuffer) > 24 {
 			lineBuffer = lineBuffer[:24]
 		}
-		return fmt.Errorf("Unknown line type encountered: %s", lineBuffer)
+		return fmt.Errorf("unknown line type encountered: %s", lineBuffer)
 	}
 }
 
@@ -501,7 +511,7 @@ func detectGatlingLogVersion(file *os.File) (string, error) {
 	if firstByte == 0 {
 		msg, err := ReadRunMessage(bufio.NewReader(file))
 		if err == io.EOF {
-			return "", fmt.Errorf("The file %s is empty or contains no readable header data: %w", simulationLogFileName, err)
+			return "", fmt.Errorf("the file %s is empty or contains no readable header data: %w", simulationLogFileName, err)
 		}
 		if err != nil {
 			return "", err
@@ -514,8 +524,14 @@ func detectGatlingLogVersion(file *os.File) (string, error) {
 		reader := bufio.NewReader(file)
 		var line []byte
 		var err error
-		// skip assertion records if they present
-		for line, err = reader.ReadBytes('\n'); runLine.Match(line); {
+		// Read lines until the RUN line is found, skipping any preceding
+		// records (e.g. assertions). Each iteration reads a new line, so the
+		// loop always advances and cannot spin forever.
+		for {
+			line, err = reader.ReadBytes('\n')
+			if runLine.Match(line) {
+				break
+			}
 			if err != nil {
 				return "", err
 			}
@@ -623,7 +639,13 @@ func processRemainingRecords(
 			return
 		default:
 			// Check file size
-			if stat, _ := file.Stat(); stat.Size() == lastSize {
+			stat, err := file.Stat()
+			if err != nil {
+				l.Errorf("Failed to stat log file: %v", err)
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if stat.Size() == lastSize {
 				if time.Now().After(latestReadTime.Add(time.Duration(waitTime) * time.Second)) {
 					l.Infof("File size unchanged for %d seconds. Stopping application...", waitTime)
 					return
@@ -633,8 +655,32 @@ func processRemainingRecords(
 				latestReadTime = time.Now()
 			}
 
+			// Remember the logical position of the reader before attempting to
+			// read the next record. bufio.Reader may have buffered bytes ahead
+			// of the file's real offset, so subtract the buffered amount to get
+			// the offset of the next byte that a read would return.
+			recordStart, err := file.Seek(0, io.SeekCurrent)
+			if err != nil {
+				l.Errorf("Failed to determine current file offset: %v", err)
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			recordStart -= int64(reader.Buffered())
+
 			record, err := ReadNotHeaderRecord(reader, runMessage.Start, scenarios)
 			if err != nil {
+				// The record may be only partially written to the live file.
+				// ReadNotHeaderRecord could have already consumed the record
+				// type byte and part of the fields before failing. Continuing
+				// as-is would desynchronize the reader and cause spurious
+				// "unknown record type" errors and data loss. Rewind the file
+				// to the record boundary and reset the buffered reader so the
+				// record is re-read from scratch once it is fully written.
+				if _, seekErr := file.Seek(recordStart, io.SeekStart); seekErr != nil {
+					l.Errorf("Failed to rewind file to record start (offset %d): %v", recordStart, seekErr)
+				} else {
+					reader.Reset(file)
+				}
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -642,6 +688,7 @@ func processRemainingRecords(
 		}
 	}
 }
+
 type RecordsWriter interface {
 	writeAll(wg *sync.WaitGroup, records <-chan interface{})
 }
@@ -742,7 +789,7 @@ func fileProcessorBinary(ctx context.Context, file *os.File, recordsWriter Recor
 	}
 
 	wg := &sync.WaitGroup{}
-	records := make(chan interface{}, 100)
+	records := make(chan interface{}, recordsChannelBufferSize)
 	records <- *runMessage
 
 	wg.Add(2)
