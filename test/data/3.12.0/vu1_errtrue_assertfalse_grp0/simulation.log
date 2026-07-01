@@ -1,0 +1,4 @@
+RUN	example.BasicSimulation	basicsimulation	1782916886156	 	3.12.0
+USER	Scenario	START	1782916886548
+REQUEST		Request	1782916886544	1782916886594	KO	status.find.in([200, 209], 304), found 404
+USER	Scenario	END	1782916886601
